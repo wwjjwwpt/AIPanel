@@ -5,6 +5,8 @@ import SwiftUI
 @MainActor
 final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     let store = HistoryStore()
+    let displayStore = DisplayStore()
+    private var activeTab: PanelTab = .clipboard
     lazy var clipboardMonitor = ClipboardMonitor(store: store)
     lazy var screenshotMonitor = ScreenshotMonitor(store: store)
     let pasteService = PasteService()
@@ -69,6 +71,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "显示瞬贴", action: #selector(showFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "显示器镜像", action: #selector(showMirrorFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "设置…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出瞬贴", action: #selector(quitApp), keyEquivalent: "q")
@@ -83,7 +86,9 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             pasteService: pasteService,
             onPaste: { [weak self] item in self?.paste(item) },
             onClose: { [weak self] in self?.hidePanel() },
-            onOpenSettings: { [weak self] in self?.openSettings() }
+            onOpenSettings: { [weak self] in self?.openSettings() },
+            displayStore: displayStore,
+            onTabChange: { [weak self] tab in self?.activeTab = tab }
         )
         let hosting = NSHostingController(rootView: content)
         let panel = KeyablePanel(
@@ -111,21 +116,27 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
             case 53:
                 self?.hidePanel()
                 return nil
-            case 126:
-                NotificationCenter.default.post(name: .moveHistorySelectionUp, object: nil)
-                return nil
-            case 125:
-                NotificationCenter.default.post(name: .moveHistorySelectionDown, object: nil)
-                return nil
-            case 36, 76:
-                NotificationCenter.default.post(name: .pasteHistorySelection, object: nil)
-                return nil
-            case 51, 117:
-                if event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-                    NotificationCenter.default.post(name: .deleteHistorySelection, object: nil)
+            case 126, 125, 36, 76, 51, 117:
+                guard self?.activeTab == .clipboard else { return event }
+                switch event.keyCode {
+                case 126:
+                    NotificationCenter.default.post(name: .moveHistorySelectionUp, object: nil)
                     return nil
+                case 125:
+                    NotificationCenter.default.post(name: .moveHistorySelectionDown, object: nil)
+                    return nil
+                case 36, 76:
+                    NotificationCenter.default.post(name: .pasteHistorySelection, object: nil)
+                    return nil
+                case 51, 117:
+                    if event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                        NotificationCenter.default.post(name: .deleteHistorySelection, object: nil)
+                        return nil
+                    }
+                    return event
+                default:
+                    return event
                 }
-                return event
             default:
                 return event
             }
@@ -143,6 +154,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func showFromMenu() { showPanel() }
+    @objc private func showMirrorFromMenu() {
+        NotificationCenter.default.post(name: .showMirrorTab, object: nil)
+        showPanel()
+    }
     @objc private func openSettingsFromMenu() { openSettings() }
     @objc private func quitApp() { NSApp.terminate(nil) }
 
@@ -215,4 +230,5 @@ extension Notification.Name {
     static let moveHistorySelectionDown = Notification.Name("moveHistorySelectionDown")
     static let pasteHistorySelection = Notification.Name("pasteHistorySelection")
     static let deleteHistorySelection = Notification.Name("deleteHistorySelection")
+    static let showMirrorTab = Notification.Name("showMirrorTab")
 }

@@ -8,16 +8,25 @@ enum HistoryFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+enum PanelTab: String, CaseIterable, Identifiable {
+    case clipboard = "剪贴板"
+    case mirror = "显示器镜像"
+    var id: String { rawValue }
+}
+
 struct HistoryPanelView: View {
     @ObservedObject var store: HistoryStore
     @ObservedObject var pasteService: PasteService
     let onPaste: (HistoryItem) -> Void
     let onClose: () -> Void
     let onOpenSettings: () -> Void
+    @ObservedObject var displayStore: DisplayStore
+    let onTabChange: (PanelTab) -> Void
 
     @State private var query = ""
     @State private var filter: HistoryFilter = .all
     @State private var selectedID: HistoryItem.ID?
+    @State private var tab: PanelTab = .clipboard
     @FocusState private var searchFocused: Bool
 
     private var filteredItems: [HistoryItem] {
@@ -34,11 +43,17 @@ struct HistoryPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            tabBar
             Divider()
-            if filteredItems.isEmpty { emptyState } else { historyList }
-            Divider()
-            footer
+            if tab == .clipboard {
+                header
+                Divider()
+                if filteredItems.isEmpty { emptyState } else { historyList }
+                Divider()
+                footer
+            } else {
+                MirrorTabView(store: displayStore)
+            }
         }
         .frame(minWidth: 700, minHeight: 540)
         .background(.ultraThickMaterial)
@@ -46,6 +61,8 @@ struct HistoryPanelView: View {
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.18), lineWidth: 1))
         .onAppear { selectFirstAndFocus() }
         .onReceive(NotificationCenter.default.publisher(for: .focusHistorySearch)) { _ in selectFirstAndFocus() }
+        .onReceive(NotificationCenter.default.publisher(for: .showMirrorTab)) { _ in tab = .mirror }
+        .onChange(of: tab) { onTabChange($0) }
         .onReceive(NotificationCenter.default.publisher(for: .moveHistorySelectionUp)) { _ in moveSelection(by: -1) }
         .onReceive(NotificationCenter.default.publisher(for: .moveHistorySelectionDown)) { _ in moveSelection(by: 1) }
         .onReceive(NotificationCenter.default.publisher(for: .pasteHistorySelection)) { _ in pasteSelected() }
@@ -54,6 +71,28 @@ struct HistoryPanelView: View {
             if !newValue.contains(where: { $0.id == selectedID }) { selectedID = newValue.first?.id }
         }
         .onExitCommand(perform: onClose)
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 10) {
+            Picker("", selection: $tab) {
+                ForEach(PanelTab.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 285)
+            Spacer()
+            if tab == .mirror {
+                Circle().fill(displayStore.isMirroring ? .green : .secondary.opacity(0.35)).frame(width: 7, height: 7)
+                Text(displayStore.isMirroring
+                     ? "镜像中"
+                     : (displayStore.displays.count < 2 ? "未检测到外接显示器" : "扩展显示模式"))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(size: 12))
+        .padding(.horizontal, 18)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
     }
 
     private var header: some View {
