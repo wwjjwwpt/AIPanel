@@ -95,8 +95,8 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         panel.titleVisibility = .hidden
         panel.titlebarAppearsTransparent = true
         panel.isMovableByWindowBackground = true
-        panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.utilityWindow)))
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = true
         panel.backgroundColor = .clear
@@ -159,6 +159,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
         positionPanel(panel)
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
         NotificationCenter.default.post(name: .focusHistorySearch, object: nil)
     }
 

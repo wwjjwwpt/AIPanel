@@ -40,5 +40,5 @@ if [[ -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$CONTENTS_DIR/Info.plist"
 fi
 
-codesign --force --deep --sign - "$BUNDLE_DIR"
+codesign --force --deep --sign "Apple Development: 553060364@qq.com (V7QQ4454GR)" "$BUNDLE_DIR"
 echo "$BUNDLE_DIR"
