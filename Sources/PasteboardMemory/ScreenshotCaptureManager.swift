@@ -104,6 +104,7 @@ final class ScreenshotCaptureManager {
     private weak var clipboardMonitor: ClipboardMonitor?
     private var overlayWindow: NSWindow?
     private var editor: ScreenshotEditor?
+    private var isCapturing = false
 
     init(store: HistoryStore, clipboardMonitor: ClipboardMonitor) {
         self.store = store
@@ -115,16 +116,20 @@ final class ScreenshotCaptureManager {
             editor.present()
             return
         }
-        guard overlayWindow == nil else { return }
+        guard overlayWindow == nil, !isCapturing else { return }
         if !CGPreflightScreenCaptureAccess() {
-            CGRequestScreenCaptureAccess()
+            let granted = CGRequestScreenCaptureAccess()
+            guard granted || CGPreflightScreenCaptureAccess() else {
+                showPermissionHelp()
+                return
+            }
         }
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
                 ?? NSScreen.main else { return }
 
         let view = ScreenshotOverlayView(frame: screen.frame)
         view.onCapture = { [weak self] rect in
-            self?.captureRegion(rect, screen: screen)
+            Task { await self?.captureRegion(rect, screen: screen) }
         }
         view.onCancel = { [weak self] in
             self?.dismissOverlay()
@@ -145,36 +150,21 @@ final class ScreenshotCaptureManager {
         window.makeFirstResponder(view)
     }
 
-    private func captureRegion(_ rect: CGRect, screen: NSScreen) {
-        // AppKit uses a bottom-left origin; screencapture uses the main display's top-left.
-        let desktopTop = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
-        let captureRect = CGRect(x: screen.frame.minX + rect.minX,
-                                 y: desktopTop - (screen.frame.minY + rect.maxY),
-                                 width: rect.width,
-                                 height: rect.height)
+    private func captureRegion(_ rect: CGRect, screen: NSScreen) async {
+        guard !isCapturing else { return }
+        isCapturing = true
+        defer { isCapturing = false }
         dismissOverlay()
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("screenshot-\(UUID().uuidString).png")
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        process.arguments = ["-x", "-R",
-                              "\(captureRect.minX),\(captureRect.minY),\(captureRect.width),\(captureRect.height)",
-                              tempURL.path]
+        let nsImage: NSImage
         do {
-            try process.run()
-            process.waitUntilExit()
+            nsImage = try await ScreenshotCaptureService.capture(selection: rect, screen: screen)
         } catch {
-            showAlert(title: "截图失败", message: "无法启动截图工具：\(error.localizedDescription)")
-            return
-        }
-
-        guard FileManager.default.fileExists(atPath: tempURL.path),
-              let nsImage = NSImage(contentsOf: tempURL) else {
-            showAlert(title: "截图失败",
-                      message: "无法捕获屏幕内容。请在系统设置 > 隐私与安全性 > 屏幕录制中允许瞬贴，然后重试。")
+            if ScreenshotCaptureService.isPermissionError(error) || !CGPreflightScreenCaptureAccess() {
+                showPermissionHelp()
+            } else {
+                let detail = error as NSError
+                showAlert(title: "截图失败", message: "屏幕录制权限已开启，但截图接口返回错误。\n\(detail.localizedDescription)\n错误：\(detail.domain)（\(detail.code)）")
+            }
             return
         }
 
@@ -218,6 +208,19 @@ final class ScreenshotCaptureManager {
     private func dismissOverlay() {
         overlayWindow?.orderOut(nil)
         overlayWindow = nil
+    }
+
+    private func showPermissionHelp() {
+        let alert = NSAlert()
+        alert.messageText = "屏幕录制授权尚未生效"
+        alert.informativeText = "请在系统设置 → 隐私与安全性 → 屏幕与系统音频录制（或屏幕录制）中允许瞬贴，然后完全退出并重新打开瞬贴。\n\n如果开关已经打开：更新后的本机试用版可能未匹配旧授权。请从列表移除旧的瞬贴，再通过 ＋ 添加 /Applications/瞬贴.app，开启权限并重新启动。"
+        alert.addButton(withTitle: "打开系统设置")
+        alert.addButton(withTitle: "稍后")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func showAlert(title: String, message: String) {

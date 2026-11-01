@@ -28,6 +28,9 @@
 没有开发者签名证书时，可用 `SIGNING_IDENTITY=- ./scripts/build-app.sh` 构建本机试用版本。
 截图标注与导出回归检查：`zsh scripts/test-screenshot-editor.sh`（无需安装 Xcode）。
 
+macOS 14 及以上通过 ScreenCaptureKit 在应用内截图；macOS 13 使用系统截图工具。
+本机试用版使用临时签名，重新构建后可能需要重新授权屏幕录制：在系统设置中移除旧的瞬贴，重新添加 `/Applications/瞬贴.app` 并开启权限，然后完全退出、重开应用。使用固定的开发者签名证书可避免更新时因签名身份变化导致的授权失配。
+
 ## 首次使用
 
 1. 打开 `瞬贴.app`，菜单栏会出现剪贴板图标。

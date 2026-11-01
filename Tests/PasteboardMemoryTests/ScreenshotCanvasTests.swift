@@ -1,4 +1,5 @@
 import AppKit
+import ScreenCaptureKit
 
 // Standalone AppKit regression checks; no Xcode or test framework required.
 @main
@@ -10,7 +11,8 @@ struct ScreenshotCanvasTests {
         try testAllToolsRenderIntoExport()
         try testToolbarStaysOnScreen()
         try testTransparentOverlayAndInlineText()
-        print("PASS: pixel export, all tools, undo/redo, toolbar placement, transparent overlay, inline text")
+        try testCaptureGeometryAndErrorClassification()
+        print("PASS: pixel export, all tools, undo/redo, toolbar placement, transparent overlay, inline text, capture coordinates, permission error classification")
     }
 
     private static func require<T>(_ value: T?, line: UInt = #line) throws -> T {
@@ -112,6 +114,16 @@ struct ScreenshotCanvasTests {
                 try expect(frame.maxY < selection.minY)
             }
         }
+    }
+
+    static func testCaptureGeometryAndErrorClassification() throws {
+        let region = ScreenshotCaptureService.sourceRect(selection: CGRect(x: 100, y: 50, width: 300, height: 200),
+                                                         screenHeight: 900)
+        try expect(region == CGRect(x: 100, y: 650, width: 300, height: 200))
+        let denied = NSError(domain: SCStreamErrorDomain, code: SCStreamError.Code.userDeclined.rawValue)
+        try expect(ScreenshotCaptureService.isPermissionError(denied))
+        try expect(!ScreenshotCaptureService.isPermissionError(NSError(domain: SCStreamErrorDomain, code: -3802)))
+        try expect(!ScreenshotCaptureService.isPermissionError(NSError(domain: NSCocoaErrorDomain, code: denied.code)))
     }
 
     @MainActor

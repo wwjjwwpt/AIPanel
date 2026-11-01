@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 mkdir -p .build/ModuleCache
 swiftc -parse-as-library -module-cache-path .build/ModuleCache \
   Sources/PasteboardMemory/ScreenshotEditor.swift \
+  Sources/PasteboardMemory/ScreenshotCaptureService.swift \
   Tests/PasteboardMemoryTests/ScreenshotCanvasTests.swift \
   -o .build/ScreenshotEditorTests
 .build/ScreenshotEditorTests
