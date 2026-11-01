@@ -9,7 +9,9 @@ MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
 cd "$ROOT_DIR"
-export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+if [[ -z "${DEVELOPER_DIR:-}" && -d "/Applications/Xcode.app/Contents/Developer" ]]; then
+  export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
+fi
 export SWIFTPM_MODULECACHE_OVERRIDE="$ROOT_DIR/.build/ModuleCache"
 export CLANG_MODULE_CACHE_PATH="$ROOT_DIR/.build/ModuleCache"
 swift build -c release --disable-sandbox
@@ -40,5 +42,5 @@ if [[ -f "$RESOURCES_DIR/AppIcon.icns" ]]; then
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$CONTENTS_DIR/Info.plist"
 fi
 
-codesign --force --deep --sign "Apple Development: 553060364@qq.com (V7QQ4454GR)" "$BUNDLE_DIR"
+codesign --force --deep --sign "${SIGNING_IDENTITY:-Apple Development: 553060364@qq.com (V7QQ4454GR)}" "$BUNDLE_DIR"
 echo "$BUNDLE_DIR"

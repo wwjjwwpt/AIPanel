@@ -71,6 +71,7 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
 
         let menu = NSMenu()
         menu.addItem(withTitle: "显示瞬贴", action: #selector(showFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "截图并标注（⌃⇧A）", action: #selector(captureFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "显示器镜像", action: #selector(showMirrorFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "设置…", action: #selector(openSettingsFromMenu), keyEquivalent: ",")
         menu.addItem(.separator())
@@ -154,6 +155,10 @@ final class AppController: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     @objc private func showFromMenu() { showPanel() }
+    @objc private func captureFromMenu() {
+        hidePanel()
+        screenshotCapture.startCapture()
+    }
     @objc private func showMirrorFromMenu() {
         NotificationCenter.default.post(name: .showMirrorTab, object: nil)
         showPanel()

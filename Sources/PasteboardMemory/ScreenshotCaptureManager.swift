@@ -103,6 +103,7 @@ final class ScreenshotCaptureManager {
     private weak var store: HistoryStore?
     private weak var clipboardMonitor: ClipboardMonitor?
     private var overlayWindow: NSWindow?
+    private var editor: ScreenshotEditor?
 
     init(store: HistoryStore, clipboardMonitor: ClipboardMonitor) {
         self.store = store
@@ -110,10 +111,16 @@ final class ScreenshotCaptureManager {
     }
 
     func startCapture() {
+        if let editor {
+            editor.present()
+            return
+        }
+        guard overlayWindow == nil else { return }
         if !CGPreflightScreenCaptureAccess() {
             CGRequestScreenCaptureAccess()
         }
-        guard let screen = NSScreen.main else { return }
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+                ?? NSScreen.main else { return }
 
         let view = ScreenshotOverlayView(frame: screen.frame)
         view.onCapture = { [weak self] rect in
@@ -139,15 +146,17 @@ final class ScreenshotCaptureManager {
     }
 
     private func captureRegion(_ rect: CGRect, screen: NSScreen) {
-        let screenHeight = screen.frame.height
-        let captureRect = CGRect(x: rect.minX,
-                                 y: screenHeight - rect.maxY,
+        // AppKit uses a bottom-left origin; screencapture uses the main display's top-left.
+        let desktopTop = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
+        let captureRect = CGRect(x: screen.frame.minX + rect.minX,
+                                 y: desktopTop - (screen.frame.minY + rect.maxY),
                                  width: rect.width,
                                  height: rect.height)
         dismissOverlay()
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("screenshot-\(UUID().uuidString).png")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
@@ -169,21 +178,40 @@ final class ScreenshotCaptureManager {
             return
         }
 
+        guard let editor = ScreenshotEditor(image: nsImage) else {
+            showAlert(title: "截图失败", message: "无法打开截图编辑器，请重试。")
+            return
+        }
+        editor.onFinish = { [weak self] data in self?.finishCapture(data) }
+        editor.onClose = { [weak self] in self?.editor = nil }
+        self.editor = editor
+        editor.present()
+    }
+
+    private func finishCapture(_ data: Data) {
+        guard let image = NSImage(data: data) else { return }
         let archiveURL = UserDefaults.standard
             .string(forKey: "screenshotArchiveWorkspace")
             .map(URL.init(fileURLWithPath:))
 
         if let archiveURL {
-            store?.addScreenshot(at: tempURL, createdAt: Date(), archiveDirectory: archiveURL)
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("瞬贴截图-\(UUID().uuidString).png")
+            do {
+                try data.write(to: tempURL, options: .atomic)
+                defer { try? FileManager.default.removeItem(at: tempURL) }
+                store?.addScreenshot(at: tempURL, createdAt: Date(), archiveDirectory: archiveURL)
+            } catch {
+                store?.addClipboardImage(image, sourceApp: "瞬贴截图")
+            }
         } else {
-            store?.addClipboardImage(nsImage, sourceApp: "瞬贴截图")
+            store?.addClipboardImage(image, sourceApp: "瞬贴截图")
         }
-
-        try? FileManager.default.removeItem(at: tempURL)
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.writeObjects([nsImage])
+        // Publish the exact rendered PNG so pixel dimensions and annotations are preserved.
+        pasteboard.setData(data, forType: .png)
         clipboardMonitor?.ignoreNextChange(pasteboard.changeCount)
     }
 
