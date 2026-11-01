@@ -8,11 +8,13 @@ struct ScreenshotCanvasTests {
         try testExportPreservesPixelsAndOrientationAtDifferentPreviewSizes()
         try testAnnotationCoordinatesUndoRedoAndNewBranch()
         try testAllToolsRenderIntoExport()
-        print("PASS: original pixel dimensions, orientation, preview independence, annotation coordinates, undo/redo, all five tools")
+        try testToolbarStaysOnScreen()
+        try testTransparentOverlayAndInlineText()
+        print("PASS: pixel export, all tools, undo/redo, toolbar placement, transparent overlay, inline text")
     }
 
-    private static func require<T>(_ value: T?) throws -> T {
-        guard let value else { throw CheckFailure.failed("Unexpected nil") }
+    private static func require<T>(_ value: T?, line: UInt = #line) throws -> T {
+        guard let value else { throw CheckFailure.failed("Line \(line): Unexpected nil") }
         return value
     }
 
@@ -94,6 +96,68 @@ struct ScreenshotCanvasTests {
                                               points: [NSPoint(x: 40, y: 140), NSPoint(x: 180, y: 170)],
                                               color: NSColor(deviceRed: 1, green: 0, blue: 0, alpha: 1), width: 4, text: "截图标注"))
             try expect(canvas.pngData() != original, "\(tool.title) did not render")
+        }
+    }
+
+    static func testToolbarStaysOnScreen() throws {
+        let screen = NSRect(x: 8, y: 8, width: 1200, height: 760)
+        let size = NSSize(width: 440, height: 90)
+        for selection in [NSRect(x: 100, y: 300, width: 500, height: 200),
+                          NSRect(x: 0, y: 0, width: 30, height: 30),
+                          NSRect(x: 1180, y: 730, width: 30, height: 30),
+                          NSRect(x: 0, y: 0, width: 1216, height: 800)] {
+            let frame = ScreenshotEditorLayout.toolbarFrame(selection: selection, available: screen, size: size)
+            try expect(screen.contains(frame))
+            if selection.minY > size.height + 16 {
+                try expect(frame.maxY < selection.minY)
+            }
+        }
+    }
+
+    @MainActor
+    static func testTransparentOverlayAndInlineText() throws {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.prohibited)
+        let screen = try require(NSScreen.main)
+        let source = makeCanvas().image
+        source.size = NSSize(width: 200, height: 100) // Retina image: logical size differs from pixels.
+        let selection = NSRect(x: 100, y: 200, width: 400, height: 200)
+        let editor = try require(ScreenshotEditor(image: source, selectionRect: selection, screen: screen))
+        let window = try require(editor.window)
+        defer { editor.close() }
+        try expect(!window.isOpaque)
+        try expect(window.backgroundColor?.alphaComponent == 0)
+        try expect(!window.styleMask.contains(.titled))
+        try expect(!window.hasShadow)
+        let content = try require(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        let canvas = try require(content.subviews.compactMap { $0 as? ScreenshotCanvas }.first)
+        try expect(canvas.frame == selection)
+        try expect(canvas.image.size == NSSize(width: 400, height: 200))
+        let toolbar = try require(content.subviews.compactMap { $0 as? NSVisualEffectView }.first)
+        try expect(toolbar.frame.width > 300 && toolbar.frame.height > 50)
+        try expect(!toolbar.frame.intersects(selection))
+        try expect(!toolbar.hasAmbiguousLayout)
+
+        canvas.tool = .text
+        let click = try require(NSEvent.mouseEvent(with: .leftMouseDown, location: NSPoint(x: 180, y: 320),
+                                                  modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                                  context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        let before = try require(canvas.pngData())
+        canvas.mouseDown(with: click)
+        let field = try require(canvas.subviews.compactMap { $0 as? NSTextField }.first)
+        field.stringValue = "原位标注"
+        canvas.finishTextEditing()
+        try expect(!canvas.subviews.contains { $0 is NSTextField })
+        try expect(canvas.pngData() != before)
+        canvas.undoAnnotation()
+        try expect(canvas.pngData() == before)
+
+        if let bitmap = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+            content.cacheDisplay(in: content.bounds, to: bitmap)
+            try expect(bitmap.colorAt(x: bitmap.pixelsWide - 2, y: 2)?.alphaComponent == 0)
+            let data = try require(bitmap.representation(using: .png, properties: [:]))
+            try data.write(to: URL(fileURLWithPath: ".build/screenshot-overlay-preview.png"))
         }
     }
 }

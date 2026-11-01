@@ -178,7 +178,7 @@ final class ScreenshotCaptureManager {
             return
         }
 
-        guard let editor = ScreenshotEditor(image: nsImage) else {
+        guard let editor = ScreenshotEditor(image: nsImage, selectionRect: rect, screen: screen) else {
             showAlert(title: "截图失败", message: "无法打开截图编辑器，请重试。")
             return
         }

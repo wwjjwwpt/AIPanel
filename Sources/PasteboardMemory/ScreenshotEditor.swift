@@ -58,7 +58,7 @@ struct ScreenshotAnnotation {
 }
 
 /// Annotations use image pixel coordinates, independent of the preview's fitted size.
-final class ScreenshotCanvas: NSView {
+final class ScreenshotCanvas: NSView, NSTextFieldDelegate {
     let image: NSImage
     var tool: AnnotationTool = .pen
     var inkColor: NSColor = .systemRed
@@ -67,6 +67,8 @@ final class ScreenshotCanvas: NSView {
     private var annotations: [ScreenshotAnnotation] = []
     private var undone: [ScreenshotAnnotation] = []
     private var draft: ScreenshotAnnotation?
+    private var textField: NSTextField?
+    private var textAnnotation: ScreenshotAnnotation?
 
     init(image: NSImage) {
         self.image = image
@@ -79,7 +81,7 @@ final class ScreenshotCanvas: NSView {
     var canRedo: Bool { !undone.isEmpty }
 
     private var imageRect: NSRect {
-        let available = bounds.insetBy(dx: 24, dy: 24)
+        let available = bounds
         let scale = max(0.001, min(available.width / image.size.width, available.height / image.size.height))
         let size = NSSize(width: image.size.width * scale, height: image.size.height * scale)
         return NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
@@ -89,8 +91,6 @@ final class ScreenshotCanvas: NSView {
     override func resetCursorRects() { addCursorRect(imageRect, cursor: .crosshair) }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.windowBackgroundColor.setFill()
-        bounds.fill()
         let rect = imageRect
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: rect).addClip()
@@ -122,23 +122,56 @@ final class ScreenshotCanvas: NSView {
         window?.makeFirstResponder(self)
         let point = imagePoint(for: event)
         if tool == .text {
-            let alert = NSAlert()
-            alert.messageText = "添加文字"
-            alert.addButton(withTitle: "添加")
-            alert.addButton(withTitle: "取消")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-            field.placeholderString = "输入标注文字"
-            alert.accessoryView = field
-            alert.window.initialFirstResponder = field
-            if alert.runModal() == .alertFirstButtonReturn,
-               !field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                commit(ScreenshotAnnotation(tool: .text, points: [point], color: inkColor,
-                                            width: strokeWidth, text: field.stringValue))
-            }
+            beginText(at: point)
             return
         }
         draft = ScreenshotAnnotation(tool: tool, points: [point], color: inkColor, width: strokeWidth)
         needsDisplay = true
+    }
+
+    private func beginText(at point: NSPoint) {
+        finishTextEditing()
+        let scale = imageRect.width / image.size.width
+        let font = NSFont.systemFont(ofSize: max(20, strokeWidth * 6) * scale, weight: .semibold)
+        let height = min(bounds.height, max(24, font.pointSize + 8))
+        let x = min(max(0, point.x * scale), max(0, bounds.width - 160))
+        let y = min(max(0, point.y * scale - height), max(0, bounds.height - height))
+        let field = NSTextField(frame: NSRect(x: x, y: y,
+                                              width: min(300, bounds.width - x), height: height))
+        field.font = font
+        field.textColor = inkColor
+        field.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.9)
+        field.placeholderString = "输入文字，回车确认"
+        field.delegate = self
+        textAnnotation = ScreenshotAnnotation(tool: .text,
+                                              points: [NSPoint(x: x / scale, y: (y + height) / scale)],
+                                              color: inkColor, width: strokeWidth)
+        textField = field
+        addSubview(field)
+        window?.makeFirstResponder(field)
+    }
+
+    func finishTextEditing(commitText: Bool = true) {
+        guard let field = textField, var annotation = textAnnotation else { return }
+        textField = nil
+        textAnnotation = nil
+        annotation.text = field.currentEditor()?.string ?? field.stringValue
+        field.removeFromSuperview()
+        if commitText && !annotation.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            commit(annotation)
+        }
+    }
+
+    func controlTextDidEndEditing(_ notification: Notification) { finishTextEditing() }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.insertNewline(_:)) ||
+            commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            finishTextEditing(commitText: commandSelector != #selector(NSResponder.cancelOperation(_:)))
+            window?.makeFirstResponder(self)
+            return true
+        }
+        return false
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -183,6 +216,7 @@ final class ScreenshotCanvas: NSView {
     }
 
     func pngData() -> Data? {
+        finishTextEditing()
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil,
                                             pixelsWide: Int(image.size.width), pixelsHigh: Int(image.size.height),
                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -206,31 +240,61 @@ private extension NSAffineTransform {
     }
 }
 
+/// Places the toolbar beside the selection, keeping it within the display's usable bounds.
+enum ScreenshotEditorLayout {
+    static func toolbarFrame(selection: NSRect, available: NSRect, size: NSSize) -> NSRect {
+        let margin: CGFloat = 8
+        let width = min(size.width, available.width)
+        let height = min(size.height, available.height)
+        let x = min(max(selection.maxX - width, available.minX), available.maxX - width)
+        let below = selection.minY - height - margin
+        let above = selection.maxY + margin
+        let y: CGFloat
+        if below >= available.minY {
+            y = below
+        } else if above + height <= available.maxY {
+            y = above
+        } else {
+            y = min(max(selection.minY + margin, available.minY), available.maxY - height)
+        }
+        return NSRect(x: x, y: y, width: width, height: height)
+    }
+}
+
+private final class ScreenshotEditorWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
 @MainActor
 final class ScreenshotEditor: NSWindowController, NSWindowDelegate {
     var onFinish: ((Data) -> Void)?
     var onClose: (() -> Void)?
     private let canvas: ScreenshotCanvas
+    private let selectionRect: NSRect
+    private let availableRect: NSRect
     private let undoButton = NSButton(title: "撤销", target: nil, action: nil)
     private let redoButton = NSButton(title: "重做", target: nil, action: nil)
+    private let colors: [NSColor] = [.systemRed, .systemYellow, .systemGreen, .systemBlue, .white, .black]
     private var exportInProgress = false
 
-    init?(image: NSImage) {
+    init?(image: NSImage, selectionRect: NSRect, screen: NSScreen) {
         guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
         let pixelImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         canvas = ScreenshotCanvas(image: pixelImage)
-        let visible = (NSScreen.main?.visibleFrame.size) ?? NSSize(width: 1200, height: 800)
-        let size = NSSize(width: min(1080, visible.width - 40), height: min(760, visible.height - 40))
-        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
-                              styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                              backing: .buffered, defer: false)
+        self.selectionRect = selectionRect
+        availableRect = screen.visibleFrame.offsetBy(dx: -screen.frame.minX, dy: -screen.frame.minY).insetBy(dx: 8, dy: 8)
+        let window = ScreenshotEditorWindow(contentRect: screen.frame, styleMask: .borderless,
+                                            backing: .buffered, defer: false)
         super.init(window: window)
         window.title = "截图标注"
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 720, height: 420)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.delegate = self
         configureContent()
-        window.center()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -244,17 +308,36 @@ final class ScreenshotEditor: NSWindowController, NSWindowDelegate {
 
     private func configureContent() {
         guard let content = window?.contentView else { return }
+        // The captured image stays exactly where the user selected it. Only the toolbar has a background.
+        canvas.frame = selectionRect
+        canvas.wantsLayer = true
+        canvas.layer?.borderWidth = 1
+        canvas.layer?.borderColor = NSColor.controlAccentColor.cgColor
+        content.addSubview(canvas)
+
         let tools = NSSegmentedControl(labels: AnnotationTool.allCases.map(\.title), trackingMode: .selectOne,
                                        target: self, action: #selector(changeTool(_:)))
         tools.selectedSegment = 0
-        let color = NSColorWell()
-        color.color = canvas.inkColor
-        color.setAccessibilityLabel("标注颜色")
-        color.target = self
-        color.action = #selector(changeColor(_:))
-        color.setFrameSize(NSSize(width: 44, height: 26))
-        color.widthAnchor.constraint(equalToConstant: 44).isActive = true
-        color.heightAnchor.constraint(equalToConstant: 26).isActive = true
+        let palette = NSSegmentedControl()
+        palette.segmentCount = colors.count
+        palette.trackingMode = .selectOne
+        palette.selectedSegment = 0
+        palette.target = self
+        palette.action = #selector(changeColor(_:))
+        palette.setAccessibilityLabel("标注颜色：红、黄、绿、蓝、白、黑")
+        for (index, color) in colors.enumerated() {
+            let image = NSImage(size: NSSize(width: 16, height: 16), flipped: false) { rect in
+                color.setFill()
+                let dot = NSBezierPath(ovalIn: rect.insetBy(dx: 2, dy: 2))
+                dot.fill()
+                NSColor.gray.setStroke()
+                dot.lineWidth = 0.5
+                dot.stroke()
+                return true
+            }
+            palette.setImage(image, forSegment: index)
+            palette.setWidth(22, forSegment: index)
+        }
         let widths = NSPopUpButton()
         widths.addItems(withTitles: ["细", "中", "粗"])
         widths.setAccessibilityLabel("线条粗细")
@@ -264,38 +347,42 @@ final class ScreenshotEditor: NSWindowController, NSWindowDelegate {
         configure(undoButton, action: #selector(undoStroke), key: "z")
         configure(redoButton, action: #selector(redoStroke), key: "z")
         redoButton.keyEquivalentModifierMask = [.command, .shift]
-        let toolbar = NSStackView(views: [tools, color, widths, undoButton, redoButton])
-        toolbar.spacing = 10
-        let hint = NSTextField(labelWithString: "\(Int(canvas.image.size.width)) × \(Int(canvas.image.size.height)) 像素 · 选择工具后在截图上拖动，文字工具点击添加")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
+        let toolsRow = NSStackView(views: [tools, undoButton, redoButton])
+        toolsRow.spacing = 8
         let cancel = NSButton(title: "取消", target: self, action: #selector(cancelEditing))
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
         cancel.keyEquivalentModifierMask = []
-        let save = NSButton(title: "保存 PNG…", target: self, action: #selector(saveImage))
+        let save = NSButton(title: "保存…", target: self, action: #selector(saveImage))
         configure(save, action: #selector(saveImage), key: "s")
-        let copy = NSButton(title: "完成并复制", target: self, action: #selector(copyImage))
+        let copy = NSButton(title: "完成", target: self, action: #selector(copyImage))
         configure(copy, action: #selector(copyImage), key: "c")
-        let actions = NSStackView(views: [cancel, save, copy])
-        actions.spacing = 10
-        for view in [toolbar, canvas, hint, actions] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            content.addSubview(view)
-        }
+        copy.toolTip = "完成并复制（⌘C）"
+        let optionsRow = NSStackView(views: [palette, widths, cancel, save, copy])
+        optionsRow.spacing = 8
+        let stack = NSStackView(views: [toolsRow, optionsRow])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 8
+        let toolbar = NSVisualEffectView()
+        toolbar.material = .popover
+        toolbar.blendingMode = .withinWindow
+        toolbar.state = .active
+        toolbar.wantsLayer = true
+        toolbar.layer?.cornerRadius = 10
+        toolbar.layer?.masksToBounds = true
+        toolbar.addSubview(stack)
+        stack.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            toolbar.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            toolbar.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
-            toolbar.bottomAnchor.constraint(equalTo: canvas.topAnchor, constant: -12),
-            canvas.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            canvas.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            canvas.bottomAnchor.constraint(equalTo: hint.topAnchor, constant: -10),
-            hint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 16),
-            hint.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -16),
-            hint.bottomAnchor.constraint(equalTo: actions.topAnchor, constant: -10),
-            actions.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            actions.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+            stack.leadingAnchor.constraint(equalTo: toolbar.leadingAnchor, constant: 12),
+            stack.trailingAnchor.constraint(equalTo: toolbar.trailingAnchor, constant: -12),
+            stack.topAnchor.constraint(equalTo: toolbar.topAnchor, constant: 10),
+            stack.bottomAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: -10),
         ])
+        let size = NSSize(width: max(toolsRow.fittingSize.width, optionsRow.fittingSize.width) + 24,
+                          height: toolsRow.fittingSize.height + optionsRow.fittingSize.height + 28)
+        toolbar.frame = ScreenshotEditorLayout.toolbarFrame(selection: selectionRect, available: availableRect, size: size)
+        content.addSubview(toolbar)
         canvas.onHistoryChange = { [weak self] in self?.updateHistoryButtons() }
         updateHistoryButtons()
     }
@@ -314,9 +401,10 @@ final class ScreenshotEditor: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func changeTool(_ sender: NSSegmentedControl) {
+        canvas.finishTextEditing()
         canvas.tool = AnnotationTool(rawValue: sender.selectedSegment) ?? .pen
     }
-    @objc private func changeColor(_ sender: NSColorWell) { canvas.inkColor = sender.color }
+    @objc private func changeColor(_ sender: NSSegmentedControl) { canvas.inkColor = colors[sender.selectedSegment] }
     @objc private func changeWidth(_ sender: NSPopUpButton) { canvas.strokeWidth = [2, 4, 8][sender.indexOfSelectedItem] }
     @objc private func undoStroke() { canvas.undoAnnotation() }
     @objc private func redoStroke() { canvas.redoAnnotation() }
@@ -368,7 +456,6 @@ final class ScreenshotEditor: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        NSColorPanel.shared.orderOut(nil)
         onClose?()
     }
 }
